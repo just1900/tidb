@@ -119,7 +119,7 @@ func (s *testDDLSuiteToVerify) TestReorg() {
 			require.NoError(s.T(), err)
 
 			m = meta.NewMeta(txn)
-			info, err1 := getReorgInfo(d.ddlCtx, m, job, mockTbl, nil)
+			info, err1 := getReorgInfo(d.ddlCtx, m, job, mockTbl, nil, nil)
 			require.NoError(s.T(), err1)
 			require.Equal(s.T(), info.StartKey, kv.Key(handle.Encoded()))
 			require.Equal(s.T(), info.currElement, e)
@@ -150,7 +150,7 @@ func (s *testDDLSuiteToVerify) TestReorg() {
 	err = kv.RunInNewTxn(context.Background(), d.store, false, func(ctx context.Context, txn kv.Transaction) error {
 		t := meta.NewMeta(txn)
 		var err1 error
-		_, err1 = getReorgInfo(d.ddlCtx, t, job, mockTbl, []*meta.Element{element})
+		_, err1 = getReorgInfo(d.ddlCtx, t, job, mockTbl, []*meta.Element{element}, nil)
 		require.True(s.T(), meta.ErrDDLReorgElementNotExist.Equal(err1))
 		require.Equal(s.T(), job.SnapshotVer, uint64(0))
 		return nil
@@ -161,7 +161,7 @@ func (s *testDDLSuiteToVerify) TestReorg() {
 	require.NoError(s.T(), err)
 	err = kv.RunInNewTxn(context.Background(), d.store, false, func(ctx context.Context, txn kv.Transaction) error {
 		t := meta.NewMeta(txn)
-		info1, err1 := getReorgInfo(d.ddlCtx, t, job, mockTbl, []*meta.Element{element})
+		info1, err1 := getReorgInfo(d.ddlCtx, t, job, mockTbl, []*meta.Element{element}, nil)
 		require.NoError(s.T(), err1)
 		require.Equal(s.T(), info1.currElement, info.currElement)
 		require.Equal(s.T(), info1.StartKey, info.StartKey)
