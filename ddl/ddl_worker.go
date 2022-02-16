@@ -25,6 +25,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/log"
 	pumpcli "github.com/pingcap/tidb-tools/tidb-binlog/pump_client"
 	"github.com/pingcap/tidb/ddl/util"
 	"github.com/pingcap/tidb/kv"
@@ -293,19 +294,38 @@ func (d *ddl) addBatchDDLJobs(tasks []*limitJobTask) {
 			return errors.Trace(err)
 		}
 		startTs = txn.StartTS()
-
 		return nil
 	})
 
-	if err == nil {
-		for i, task := range tasks {
-			job := task.job
+	if err != nil {
+		log.Error("GenGlobalJobID", zap.Error(err))
+	} else {
+		switch len(tasks) {
+		case 0:
+			return
+		case 1:
+			job := tasks[0].job
 			job.Version = currentVersion
 			job.StartTS = startTs
-			job.ID = ids[i]
+			job.ID = ids[0]
 			err = d.addDDLJob(job)
 			if err != nil {
-				break
+				if err != nil {
+					log.Error("addDDLJob", zap.Error(err))
+				}
+			}
+		default:
+			jobTasks := make([]*model.Job, len(tasks))
+			for i, task := range tasks {
+				job := task.job
+				job.Version = currentVersion
+				job.StartTS = startTs
+				job.ID = ids[i]
+				jobTasks[i] = job
+			}
+			err = d.addDDLJobs(jobTasks)
+			if err != nil {
+				log.Error("addDDLJobs", zap.Error(err))
 			}
 		}
 	}
@@ -523,7 +543,10 @@ func (w *worker) handleDDLJob(d *ddlCtx, job *model.Job, ch chan struct{}) {
 	)
 	waitTime := 2 * d.lease
 
-	w.sessForJob.NewTxn(w.ctx)
+	err := w.sessForJob.NewTxn(w.ctx)
+	if err != nil {
+		panic(err)
+	}
 	w.sessForJob.PrepareTSFuture(w.ctx)
 	txn, _ := w.sessForJob.Txn(true)
 	w.sessForJob.GetSessionVars().SetInTxn(true)
@@ -542,7 +565,6 @@ func (w *worker) handleDDLJob(d *ddlCtx, job *model.Job, ch chan struct{}) {
 			if err != nil {
 				panic(err)
 			}
-			schemaVer = t.Diff.Version
 		}
 		err := txn.Commit(w.ctx)
 		if err != nil {
@@ -569,7 +591,10 @@ func (w *worker) handleDDLJob(d *ddlCtx, job *model.Job, ch chan struct{}) {
 		txn.Reset()
 		_ = w.finishDDLJob(t, job)
 		w.sessForJob.StmtCommit()
-		txn.Commit(w.ctx)
+		err = txn.Commit(w.ctx)
+		if err != nil {
+			log.Error("txn commit", zap.Error(err))
+		}
 		return
 	}
 
@@ -586,7 +611,9 @@ func (w *worker) handleDDLJob(d *ddlCtx, job *model.Job, ch chan struct{}) {
 		schemaVer = 0
 	}
 
-	err := w.updateDDLJob(t, job, runJobErr != nil)
+	if err = w.updateDDLJob(t, job, runJobErr != nil); err != nil {
+		return
+	}
 	if err = w.handleUpdateJobError(t, job, err); err != nil {
 		return
 	}

@@ -127,7 +127,7 @@ func (s *testDDLSuiteToVerify) TestNotifyDDLJob() {
 	// Ensure that the notification is not handled in workers `start` function.
 	d.cancel()
 	for _, worker := range d.workers {
-		worker.close()
+		worker.Close()
 	}
 
 	job := &model.Job{
