@@ -167,23 +167,6 @@ func (m *Meta) GenGlobalID() (int64, error) {
 	return m.txn.Inc(mNextGlobalIDKey, 1)
 }
 
-// GenGlobalJobID generates next job id globally.
-func (m *Meta) GenGlobalJobID(n int) ([]int64, error) {
-	globalJobIDMutex.Lock()
-	defer globalJobIDMutex.Unlock()
-
-	newID, err := m.txn.Inc(mNextGlobalJobIDKey, int64(n))
-	if err != nil {
-		return nil, err
-	}
-	origID := newID - int64(n)
-	ids := make([]int64, 0, n)
-	for i := origID + 1; i <= newID; i++ {
-		ids = append(ids, i)
-	}
-	return ids, nil
-}
-
 // GenGlobalIDs generates the next n global IDs.
 func (m *Meta) GenGlobalIDs(n int) ([]int64, error) {
 	globalIDMutex.Lock()

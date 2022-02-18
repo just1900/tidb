@@ -196,8 +196,8 @@ type ddl struct {
 
 	*ddlCtx
 	workers           map[workerType]*worker
-	wp                *workerPool
-	gwp               *workerPool
+	addIdxWorker      *workerPool
+	generalWorker     *workerPool
 	sessPool          *sessionPool
 	delRangeMgr       delRangeManager
 	sessForAddDDL     sessionctx.Context
@@ -394,7 +394,7 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 		d.delRangeMgr = d.newDeleteRangeManager(ctxPool == nil)
 
 		if AllowConcurrentDDL.Load() {
-			sysFac := func() (pools.Resource, error) {
+			addIdxWorkerFunc := func() (pools.Resource, error) {
 				wk := newWorker(d.ctx, addIdxWorker, d.sessPool, d.delRangeMgr)
 
 				metrics.DDLCounter.WithLabelValues(fmt.Sprintf("%s_%s", metrics.CreateDDL, wk.String())).Inc()
@@ -404,7 +404,7 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 				asyncNotify(wk.ddlJobCh)
 				return wk, nil
 			}
-			sysFac2 := func() (pools.Resource, error) {
+			generalWorkerFunc := func() (pools.Resource, error) {
 				wk := newWorker(d.ctx, generalWorker, d.sessPool, d.delRangeMgr)
 
 				metrics.DDLCounter.WithLabelValues(fmt.Sprintf("%s_%s", metrics.CreateDDL, wk.String())).Inc()
@@ -414,8 +414,8 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 				asyncNotify(wk.ddlJobCh)
 				return wk, nil
 			}
-			d.wp = newDDLWorkerPool(pools.NewResourcePool(sysFac, 10, 10, 3*time.Minute))
-			d.gwp = newDDLWorkerPool(pools.NewResourcePool(sysFac2, 300, 300, 0))
+			d.addIdxWorker = newDDLWorkerPool(pools.NewResourcePool(addIdxWorkerFunc, 10, 10, 3*time.Minute))
+			d.generalWorker = newDDLWorkerPool(pools.NewResourcePool(generalWorkerFunc, 10, 10, 0))
 			d.sessForAddDDL, _ = d.sessPool.get()
 			d.wg.Run(d.startDispatchLoop)
 		} else {
@@ -473,11 +473,11 @@ func (d *ddl) close() {
 	d.ownerManager.Cancel()
 	d.schemaSyncer.Close()
 	if AllowConcurrentDDL.Load() {
-		if d.wp != nil {
-			d.wp.close()
+		if d.addIdxWorker != nil {
+			d.addIdxWorker.close()
 		}
-		if d.gwp != nil {
-			d.gwp.close()
+		if d.generalWorker != nil {
+			d.generalWorker.close()
 		}
 	} else {
 		for _, worker := range d.workers {
@@ -494,7 +494,6 @@ func (d *ddl) close() {
 		d.sessPool.put(d.sessForAddDDL)
 		d.sessPool.close()
 	}
-	logutil.BgLogger().Info("[ddl] DDL closing")
 	variable.UnregisterStatistics(d)
 
 	logutil.BgLogger().Info("[ddl] DDL closed", zap.String("ID", d.uuid), zap.Duration("take time", time.Since(startTime)))

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"github.com/pingcap/tidb/util/topsql"
 	topsqlstate "github.com/pingcap/tidb/util/topsql/state"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	atomicutil "go.uber.org/atomic"
 	"go.uber.org/zap"
 )
 
@@ -51,7 +53,7 @@ var (
 	// RunWorker indicates if this TiDB server starts DDL worker and can run DDL job.
 	RunWorker = true
 	// ddlWorkerID is used for generating the next DDL worker ID.
-	ddlWorkerID = int32(0)
+	ddlWorkerID = atomicutil.NewInt32(0)
 	// WaitTimeWhenErrorOccurred is waiting interval when processing DDL jobs encounter errors.
 	WaitTimeWhenErrorOccurred = int64(1 * time.Second)
 
@@ -113,7 +115,7 @@ type ddlJobCache struct {
 
 func newWorker(ctx context.Context, tp workerType, sessPool *sessionPool, delRangeMgr delRangeManager) *worker {
 	worker := &worker{
-		id:       atomic.AddInt32(&ddlWorkerID, 1),
+		id:       ddlWorkerID.Add(1),
 		tp:       tp,
 		ddlJobCh: make(chan struct{}, 1),
 		ctx:      ctx,
@@ -274,7 +276,12 @@ func (d *ddl) limitDDLJobs() {
 			for i := 0; i < jobLen; i++ {
 				tasks = append(tasks, <-d.limitJobCh)
 			}
-			d.addBatchDDLJobs(tasks)
+			if AllowConcurrentDDL.Load() {
+				d.addConcurrencyDDLJobs(tasks)
+			} else {
+				d.addBatchDDLJobs(tasks)
+			}
+
 		case <-d.ctx.Done():
 			return
 		}
@@ -284,22 +291,67 @@ func (d *ddl) limitDDLJobs() {
 // addBatchDDLJobs gets global job IDs and puts the DDL jobs in the DDL queue.
 func (d *ddl) addBatchDDLJobs(tasks []*limitJobTask) {
 	startTime := time.Now()
+	err := kv.RunInNewTxn(context.Background(), d.store, true, func(ctx context.Context, txn kv.Transaction) error {
+		t := meta.NewMeta(txn)
+		ids, err := t.GenGlobalIDs(len(tasks))
+		if err != nil {
+			return errors.Trace(err)
+		}
+
+		for i, task := range tasks {
+			job := task.job
+			job.Version = currentVersion
+			job.StartTS = txn.StartTS()
+			job.ID = ids[i]
+			if err = buildJobDependence(t, job); err != nil {
+				return errors.Trace(err)
+			}
+			jobListKey := meta.DefaultJobListKey
+			if mayNeedReorg(job) {
+				jobListKey = meta.AddIndexJobListKey
+			}
+			if err = t.EnQueueDDLJob(job, jobListKey); err != nil {
+				return errors.Trace(err)
+			}
+		}
+		failpoint.Inject("mockAddBatchDDLJobsErr", func(val failpoint.Value) {
+			if val.(bool) {
+				failpoint.Return(errors.Errorf("mockAddBatchDDLJobsErr"))
+			}
+		})
+		return nil
+	})
+	var jobs string
+	for _, task := range tasks {
+		task.err <- err
+		jobs += task.job.String() + "; "
+		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerAddDDLJob, task.job.Type.String(),
+			metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
+	}
+	if err != nil {
+		logutil.BgLogger().Warn("[ddl] add DDL jobs failed", zap.String("jobs", jobs), zap.Error(err))
+	} else {
+		logutil.BgLogger().Info("[ddl] add DDL jobs", zap.Int("batch count", len(tasks)), zap.String("jobs", jobs))
+	}
+}
+
+// addConcurrencyDDLJobs gets global job IDs and puts the DDL jobs in the DDL queue.
+func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
+	startTime := time.Now()
 	var ids []int64
 	var err error
 	startTs := uint64(0)
 	err = kv.RunInNewTxn(context.Background(), d.store, true, func(ctx context.Context, txn kv.Transaction) error {
 		t := meta.NewMeta(txn)
-		ids, err = t.GenGlobalJobID(len(tasks))
+		ids, err = t.GenGlobalIDs(len(tasks))
 		if err != nil {
+			log.Error("GenGlobalJobID", zap.Error(err))
 			return errors.Trace(err)
 		}
 		startTs = txn.StartTS()
 		return nil
 	})
-
-	if err != nil {
-		log.Error("GenGlobalJobID", zap.Error(err))
-	} else {
+	if err == nil {
 		switch len(tasks) {
 		case 0:
 			return
@@ -310,9 +362,7 @@ func (d *ddl) addBatchDDLJobs(tasks []*limitJobTask) {
 			job.ID = ids[0]
 			err = d.addDDLJob(job)
 			if err != nil {
-				if err != nil {
-					log.Error("addDDLJob", zap.Error(err))
-				}
+				log.Error("addDDLJob", zap.Error(err))
 			}
 		default:
 			jobTasks := make([]*model.Job, len(tasks))
@@ -329,15 +379,19 @@ func (d *ddl) addBatchDDLJobs(tasks []*limitJobTask) {
 			}
 		}
 	}
-
-	var jobs string
+	var jobs strings.Builder
 	for _, task := range tasks {
 		task.err <- err
-		jobs += task.job.String() + "; "
+		jobs.WriteString(task.job.String())
+		jobs.WriteString("; ")
 		metrics.DDLWorkerHistogram.WithLabelValues(metrics.WorkerAddDDLJob, task.job.Type.String(),
 			metrics.RetLabel(err)).Observe(time.Since(startTime).Seconds())
 	}
-	logutil.BgLogger().Info("[ddl] add DDL jobs", zap.Int("batch count", len(tasks)), zap.String("jobs", jobs))
+	if err != nil {
+		logutil.BgLogger().Warn("[ddl] add DDL jobs failed", zap.String("jobs", jobs.String()), zap.Error(err))
+	} else {
+		logutil.BgLogger().Info("[ddl] add DDL jobs", zap.Int("batch count", len(tasks)), zap.String("jobs", jobs.String()))
+	}
 }
 
 // getHistoryDDLJob gets a DDL job with job's ID from history queue.
@@ -535,8 +589,6 @@ func (w *worker) setDDLLabelForTopSQL(job *model.Job) {
 var schemaVersionMu sync.Mutex
 
 func (w *worker) handleDDLJob(d *ddlCtx, job *model.Job, ch chan struct{}) {
-	w.wg.Add(1)
-	defer w.wg.Done()
 	var (
 		schemaVer int64
 		runJobErr error
@@ -788,7 +840,7 @@ func (w *worker) handleDDLJobQueue(d *ddlCtx) error {
 		cancel()
 
 		if RunInGoTest {
-			// d.Mu.hook is initialed from domain / test callback, which will force the owner host update schema diff synchronously.
+			// d.mu.hook is initialed from domain / test callback, which will force the owner host update schema diff synchronously.
 			d.mu.RLock()
 			d.mu.hook.OnSchemaStateChanged()
 			d.mu.RUnlock()
@@ -1175,7 +1227,7 @@ func updateSchemaVersion(t *meta.Meta, job *model.Job) (int64, error) {
 	}
 	switch job.Type {
 	case model.ActionCreateTables:
-		tableInfos := []*model.TableInfo{}
+		var tableInfos []*model.TableInfo
 		err = job.DecodeArgs(&tableInfos)
 		if err != nil {
 			return 0, errors.Trace(err)
@@ -1223,11 +1275,11 @@ func updateSchemaVersion(t *meta.Meta, job *model.Job) (int64, error) {
 		}
 		diff.TableID = job.TableID
 	case model.ActionRenameTables:
-		oldSchemaIDs := []int64{}
-		newSchemaIDs := []int64{}
-		tableNames := []*model.CIStr{}
-		tableIDs := []int64{}
-		oldSchemaNames := []*model.CIStr{}
+		var oldSchemaIDs []int64
+		var newSchemaIDs []int64
+		var tableNames []*model.CIStr
+		var tableIDs []int64
+		var oldSchemaNames []*model.CIStr
 		err = job.DecodeArgs(&oldSchemaIDs, &newSchemaIDs, &tableNames, &tableIDs, &oldSchemaNames)
 		if err != nil {
 			return 0, errors.Trace(err)
