@@ -29,6 +29,7 @@ import (
 	"github.com/ngaut/pools"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
+	"github.com/pingcap/log"
 	pumpcli "github.com/pingcap/tidb-tools/tidb-binlog/pump_client"
 	"github.com/pingcap/tidb/config"
 	"github.com/pingcap/tidb/ddl/util"
@@ -395,8 +396,10 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 
 		if AllowConcurrentDDL.Load() {
 			addIdxWorkerFunc := func() (pools.Resource, error) {
-				wk := newWorker(d.ctx, addIdxWorker, d.sessPool, d.delRangeMgr)
-
+				wk, err := newWorker(d.ctx, addIdxWorker, d.sessPool, d.delRangeMgr)
+				if err != nil {
+					return wk, errors.Trace(err)
+				}
 				metrics.DDLCounter.WithLabelValues(fmt.Sprintf("%s_%s", metrics.CreateDDL, wk.String())).Inc()
 
 				// When the start function is called, we will send a fake job to let worker
@@ -405,8 +408,10 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 				return wk, nil
 			}
 			generalWorkerFunc := func() (pools.Resource, error) {
-				wk := newWorker(d.ctx, generalWorker, d.sessPool, d.delRangeMgr)
-
+				wk, err := newWorker(d.ctx, generalWorker, d.sessPool, d.delRangeMgr)
+				if err != nil {
+					return wk, errors.Trace(err)
+				}
 				metrics.DDLCounter.WithLabelValues(fmt.Sprintf("%s_%s", metrics.CreateDDL, wk.String())).Inc()
 
 				// When the start function is called, we will send a fake job to let worker
@@ -423,8 +428,14 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 			d.wg.Run(d.startDispatchLoop)
 		} else {
 			d.workers = make(map[workerType]*worker, 2)
-			d.workers[generalWorker] = newWorker(d.ctx, generalWorker, d.sessPool, d.delRangeMgr)
-			d.workers[addIdxWorker] = newWorker(d.ctx, addIdxWorker, d.sessPool, d.delRangeMgr)
+			d.workers[generalWorker], err = newWorker(d.ctx, generalWorker, d.sessPool, d.delRangeMgr)
+			if err != nil {
+				log.Fatal("fail to create generalWorker", zap.Error(err))
+			}
+			d.workers[addIdxWorker], err = newWorker(d.ctx, addIdxWorker, d.sessPool, d.delRangeMgr)
+			if err != nil {
+				log.Fatal("fail to create addIdxWorker", zap.Error(err))
+			}
 			for _, worker := range d.workers {
 				worker.wg.Add(1)
 				w := worker

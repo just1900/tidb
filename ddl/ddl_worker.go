@@ -113,7 +113,11 @@ type ddlJobCache struct {
 	cacheDigest        *parser.Digest
 }
 
-func newWorker(ctx context.Context, tp workerType, sessPool *sessionPool, delRangeMgr delRangeManager) *worker {
+func newWorker(ctx context.Context, tp workerType, sessPool *sessionPool, delRangeMgr delRangeManager) (*worker, error) {
+	sessForJob, err := sessPool.get()
+	if err != nil {
+		return nil, err
+	}
 	worker := &worker{
 		id:       ddlWorkerID.Add(1),
 		tp:       tp,
@@ -128,11 +132,11 @@ func newWorker(ctx context.Context, tp workerType, sessPool *sessionPool, delRan
 		reorgCtx:        &reorgCtx{notifyCancelReorgJob: 0},
 		sessPool:        sessPool,
 		delRangeManager: delRangeMgr,
+		sessForJob:      sessForJob,
 	}
-	worker.sessForJob, _ = worker.sessPool.get()
 	worker.addingDDLJobKey = addingDDLJobPrefix + worker.typeStr()
 	worker.logCtx = logutil.WithKeyValue(context.Background(), "worker", worker.String())
-	return worker
+	return worker, nil
 }
 
 func (w *worker) typeStr() string {
