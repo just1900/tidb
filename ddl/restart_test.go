@@ -38,8 +38,7 @@ import (
 func (d *ddl) restartWorkers(ctx context.Context) {
 	d.ctx, d.cancel = context.WithCancel(ctx)
 
-	d.wg.Add(1)
-	go d.limitDDLJobs()
+	d.wg.Run(d.limitDDLJobs)
 	if !RunWorker {
 		return
 	}
