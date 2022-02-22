@@ -259,12 +259,17 @@ func (d *ddl) startDispatchLoop() {
 			for !sleep {
 				job, err := d.getGeneralJob(sess)
 				if err != nil {
-					log.Warn("err", zap.Error(err))
+					log.Warn("getGeneralJob", zap.Error(err))
+					break
 				}
 				if job != nil {
 					d.doGeneralDDLJobWorker(job)
 				}
-				reorgJob, _ := d.getReorgJob(sess)
+				reorgJob, err := d.getReorgJob(sess)
+				if err != nil {
+					log.Error("getReorgJob", zap.Error(err))
+					break
+				}
 				if reorgJob != nil {
 					d.doReorgDDLJobWoker(reorgJob)
 				}
@@ -276,7 +281,11 @@ func (d *ddl) startDispatchLoop() {
 			if !ok {
 				panic("notifyDDLJobByEtcdChGeneral in trouble")
 			}
-			job, _ := d.getGeneralJob(sess)
+			job, err := d.getGeneralJob(sess)
+			if err != nil {
+				log.Error("getGeneralJob", zap.Error(err))
+				continue
+			}
 			if job != nil {
 				d.doGeneralDDLJobWorker(job)
 			}
@@ -284,7 +293,11 @@ func (d *ddl) startDispatchLoop() {
 			if !ok {
 				panic("notifyDDLJobByEtcdChReorg in trouble")
 			}
-			job, _ := d.getReorgJob(sess)
+			job, err := d.getReorgJob(sess)
+			if err != nil {
+				log.Error("getReorgJob", zap.Error(err))
+				continue
+			}
 			if job != nil {
 				d.doReorgDDLJobWoker(job)
 			}
@@ -300,8 +313,14 @@ func (d *ddl) doGeneralDDLJobWorker(job *model.Job) {
 		defer func() {
 			d.deleteRunningReorgJobMap(int(job.ID))
 		}()
-		wk, _ := d.generalWorker.get()
-		wk.handleDDLJob(d.ddlCtx, job, d.ddlJobCh)
+		wk, err := d.generalWorker.get()
+		if err != nil {
+			log.Warn("fail to get generalWorker", zap.Error(err))
+			return
+		}
+		if err := wk.handleDDLJob(d.ddlCtx, job, d.ddlJobCh); err != nil {
+			log.Warn("[ddl] handle DDL job failed", zap.Error(err))
+		}
 		d.generalWorker.put(wk)
 	})
 }
@@ -312,8 +331,14 @@ func (d *ddl) doReorgDDLJobWoker(job *model.Job) {
 		defer func() {
 			d.deleteRunningReorgJobMap(int(job.ID))
 		}()
-		wk, _ := d.addIdxWorker.get()
-		wk.handleDDLJob(d.ddlCtx, job, d.ddlJobCh)
+		wk, err := d.addIdxWorker.get()
+		if err != nil {
+			log.Warn("fail to get addIdxWorker", zap.Error(err))
+			return
+		}
+		if err := wk.handleDDLJob(d.ddlCtx, job, d.ddlJobCh); err != nil {
+			log.Warn("[ddl] handle DDL job failed", zap.Error(err))
+		}
 		d.addIdxWorker.put(wk)
 	})
 }
