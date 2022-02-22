@@ -349,7 +349,7 @@ func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
 		t := meta.NewMeta(txn)
 		ids, err = t.GenGlobalIDs(len(tasks))
 		if err != nil {
-			log.Error("GenGlobalJobID", zap.Error(err))
+			log.Error("[ddl] GenGlobalJobID", zap.Error(err))
 			return errors.Trace(err)
 		}
 		startTs = txn.StartTS()
@@ -366,7 +366,7 @@ func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
 			job.ID = ids[0]
 			err = d.addDDLJob(job)
 			if err != nil {
-				log.Error("addConcurrencyDDLJobs", zap.Error(err))
+				log.Error("[ddl] addConcurrencyDDLJobs", zap.Error(err))
 			}
 		default:
 			jobTasks := make([]*model.Job, len(tasks))
@@ -379,7 +379,7 @@ func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
 			}
 			err = d.addDDLJobs(jobTasks)
 			if err != nil {
-				log.Error("addConcurrencyDDLJobs", zap.Error(err))
+				log.Error("[ddl] addConcurrencyDDLJobs", zap.Error(err))
 			}
 		}
 	}
