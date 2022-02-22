@@ -416,7 +416,10 @@ func (d *ddl) Start(ctxPool *pools.ResourcePool) error {
 			}
 			d.addIdxWorker = newDDLWorkerPool(pools.NewResourcePool(addIdxWorkerFunc, 10, 10, 3*time.Minute))
 			d.generalWorker = newDDLWorkerPool(pools.NewResourcePool(generalWorkerFunc, 300, 300, 0))
-			d.sessForAddDDL, _ = d.sessPool.get()
+			d.sessForAddDDL, err = d.sessPool.get()
+			if err != nil {
+				return errors.Trace(err)
+			}
 			d.wg.Run(d.startDispatchLoop)
 		} else {
 			d.workers = make(map[workerType]*worker, 2)
