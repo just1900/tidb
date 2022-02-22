@@ -335,7 +335,7 @@ func (d *ddl) addBatchDDLJobs(tasks []*limitJobTask) {
 	}
 }
 
-// addConcurrencyDDLJobs gets global job IDs and puts the DDL jobs in the DDL queue.
+// addConcurrencyDDLJobs gets global job IDs and puts the DDL jobs in the DDL job table.
 func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
 	startTime := time.Now()
 	var ids []int64
@@ -362,7 +362,7 @@ func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
 			job.ID = ids[0]
 			err = d.addDDLJob(job)
 			if err != nil {
-				log.Error("addDDLJob", zap.Error(err))
+				log.Error("addConcurrencyDDLJobs", zap.Error(err))
 			}
 		default:
 			jobTasks := make([]*model.Job, len(tasks))
@@ -375,7 +375,7 @@ func (d *ddl) addConcurrencyDDLJobs(tasks []*limitJobTask) {
 			}
 			err = d.addDDLJobs(jobTasks)
 			if err != nil {
-				log.Error("addDDLJobs", zap.Error(err))
+				log.Error("addConcurrencyDDLJobs", zap.Error(err))
 			}
 		}
 	}
