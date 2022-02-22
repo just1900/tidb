@@ -41,9 +41,8 @@ import (
 )
 
 var (
-	globalIDMutex    sync.Mutex
-	globalJobIDMutex sync.Mutex
-	policyIDMutex    sync.Mutex
+	globalIDMutex sync.Mutex
+	policyIDMutex sync.Mutex
 )
 
 // Meta structure:
